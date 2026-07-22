@@ -1,89 +1,71 @@
-class DifferentialDriveWaypointFollower
-  
-  // Configuration
-  set_wheelbase(length_meters: float) -> void
-  set_wheel_radius(radius_meters: float) -> void
-  set_loop_rate(hz: int) -> void
-  set_max_linear_speed(m_per_s: float) -> void
-  set_max_angular_speed(rad_per_s: float) -> void
-  
-  // Mission control
-  load_waypoints(waypoints: List[Pose2D]) -> bool
-  start() -> bool
-  stop() -> void
-  pause() -> void
-  resume() -> void
-  is_running() -> bool
-  get_current_waypoint_index() -> int
-  get_mission_progress() -> float  // 0.0 to 1.0
-  
-  // State query (thread-safe)
-  get_robot_pose() -> Pose2D
-  get_robot_velocity() -> Velocity2D
-  get_battery_status() -> BatteryStatus
-  get_system_health() -> SystemHealth
-class OdometryEstimator
-  update_encoders(left_delta: int, right_delta: int) -> void
-  update_imu(yaw_rate: float, yaw_heading: float) -> void
-  get_pose() -> Pose2D
-  get_velocity() -> Velocity2D
-  reset_to_pose(pose: Pose2D) -> void
-  get_covariance() -> Matrix3x3  // pose uncertainty
-class WaypointController
-  load_waypoints(waypoints: List[Pose2D]) -> bool
-  set_goal(pose: Pose2D) -> void
-  get_next_goal() -> Pose2D
-  is_goal_reached(pose: Pose2D, tol_pos: float, tol_ang: float) -> bool
-  advance_to_next_waypoint() -> bool
-  get_remaining_waypoints() -> int
-class WaypointController
-  load_waypoints(waypoints: List[Pose2D]) -> bool
-  set_goal(pose: Pose2D) -> void
-  get_next_goal() -> Pose2D
-  is_goal_reached(pose: Pose2D, tol_pos: float, tol_ang: float) -> bool
-  advance_to_next_waypoint() -> bool
-  get_remaining_waypoints() -> int
-class MotionController
-  set_goal(pose: Pose2D) -> void
-  set_gains(kp_linear: float, kp_angular: float) -> void
-  update(current_pose: Pose2D, dt: float) -> MotionCommand
-  set_target_speed(linear_m_per_s: float) -> void
-class MotorDriver
-  set_wheel_speeds(left_m_per_s: float, right_m_per_s: float) -> bool
-  emergency_stop() -> void
-  get_battery_voltage() -> float
-class IMUReader
-  get_yaw_rate() -> float  // rad/s
-  get_heading() -> float   // rad, [-π, π]
-  get_raw_acceleration() -> Vector3  // m/s²
-  is_calibrated() -> bool
-class EncoderReader
-  get_left_ticks() -> int
-  get_right_ticks() -> int
-  get_delta_ticks_since_last_read() -> (int, int)
-  reset_counters() -> void
-// Core pose representation
-struct Pose2D
-  x: float        // meters, global frame
-  y: float        // meters, global frame
-  theta: float    // radians, [-π, π]
+#!/usr/bin/env python3
+"""
+Simple forward motion controller for X-configured omni wheel robot.
+500 RPM motors at full speed.
+"""
 
-struct Velocity2D
-  linear: float   // m/s (forward)
-  angular: float  // rad/s (CCW positive)
+from motor_driver import MotorDriver
+from encoder_reader import EncoderReader
 
-struct MotionCommand
-  left_wheel_speed: float   // m/s
-  right_wheel_speed: float  // m/s
-  timestamp: float          // seconds since start
+class SimpleForwardMotion:
+    def __init__(self, wheel_radius_m: float = 0.05):
+        """
+        Initialize forward motion controller.
+        
+        For 500 RPM motors:
+        - RPM to rad/s: 500 * 2π / 60 ≈ 52.36 rad/s
+        - Linear speed: wheel_radius * angular_velocity
+        """
+        self.motor_driver = MotorDriver()
+        self.encoder_reader = EncoderReader()
+        
+        # 500 RPM = 52.36 rad/s
+        self.max_rpm = 500
+        self.max_rad_per_s = (self.max_rpm * 2 * 3.14159) / 60
+        self.wheel_radius = wheel_radius_m
+        
+        # For X-configured omni wheels going forward:
+        # All wheels spin in same direction at same speed
+        self.forward_speed_m_per_s = self.wheel_radius * self.max_rad_per_s
+    
+    def go_forward(self, speed_percent: float = 1.0) -> bool:
+        """
+        Drive robot forward at specified speed.
+        
+        Args:
+            speed_percent: 0.0 to 1.0 (1.0 = max speed)
+        
+        Returns:
+            True if command sent successfully
+        """
+        # For X-configuration omni wheels, all 4 wheels need same speed
+        speed = self.forward_speed_m_per_s * speed_percent
+        
+        # Set both left and right wheels to same speed
+        return self.motor_driver.set_wheel_speeds(
+            left_m_per_s=speed,
+            right_m_per_s=speed
+        )
+    
+    def stop(self) -> None:
+        """Stop the robot immediately."""
+        self.motor_driver.emergency_stop()
+    
+    def coast(self) -> None:
+        """Coast to a stop (zero speed, no emergency)."""
+        self.motor_driver.set_wheel_speeds(0.0, 0.0)
 
-struct SystemHealth
-  odometry_ok: bool
-  imu_ok: bool
-  motors_ok: bool
-  battery_low: bool
-  last_error: string
 
-struct BatteryStatus
-  voltage: float  // V
-  estimated_remaining_time: float  // seconds
+# Example usage
+if __name__ == "__main__":
+    motion = SimpleForwardMotion(wheel_radius_m=0.05)
+    
+    # Go forward at full speed
+    print("Going forward at 100% speed...")
+    motion.go_forward(speed_percent=1.0)
+    
+    # Check battery
+    print(f"Battery voltage: {motion.motor_driver.get_battery_voltage()}V")
+    
+    # Stop after some time (caller would add timing logic)
+    motion.stop()
