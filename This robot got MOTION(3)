@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""
+Omni-wheel teleop for SparkyBotMini using keyboard controls with motor tuning.
+
+Controls:
+  W - forward
+  S - backward
+  A - strafe left
+  D - strafe right
+  J - rotate left (counter-clockwise)
+  L - rotate right (clockwise)
+  X - execute square sequence (forward 2s, turn 90°, repeat 3x)
+  Space - stop (active braking)
+  Q - quit
+
+MOTOR TUNING:
+  Adjust the power multipliers below if certain motors run faster/slower.
+  There are two sets of tuning multipliers:
+    - MOVE multipliers: applied when moving with WASD/space (translational)
+    - TURN multipliers: applied when rotating (J/L and sequence turns)
+
+  Each motor can be tuned independently (0.0 to 2.0 scale):
+  - MOTOR_*_MOVE: multiplier for translation movement (W/A/S/D)
+  - MOTOR_*_TURN: multiplier for rotation (J/L or sequence turns)
+
+  By default TURN multipliers are set to 2.0 to double turning power as requested.
+
+ACTIVE BRAKING:
+  When no key is pressed for a short debounce period, motors are set to 0 (active braking).
+  This prevents choppy behavior when keys are held down (the code holds the last command
+  for a small KEY_HOLD_TIME so repeated key events or slight gaps don't cause brakes).
+
+This uses the SparkyBotMini API's set_motor(m1, m2, m3, m4) call.
+Wheel order is assumed to be: front_left, front_right, rear_left, rear_right.
+Motor values use a range of -100..100 (negative == reverse). If your
+SparkyBotMini implementation uses a different convention, adjust the
+mappings accordingly.
+"""
+
+import sys
+import tty
+import termios
+import select
+import time
+from sparkybotmini import SparkyBotMini
+
+# ============================================================================
+# MOTOR TUNING SECTION
+# ============================================================================
+# Adjust these values if motors run at different speeds.
+# Valid range: 0.0 to 2.0 (where 1.0 = full power for that mode)
+# There are separate multipliers for MOVE (W/A/S/D) and TURN (J/L & sequence turns).
+# If front_left is slower during movement, increase MOTOR_FL_MOVE
+# If rear_right is faster during turning, decrease MOTOR_RR_TURN
+# ============================================================================
+# Movement (W/A/S/D) multipliers
+MOTOR_FL_MOVE = 1.0   # front_left movement power multiplier
+MOTOR_FR_MOVE = 1.0   # front_right movement power multiplier
+MOTOR_RL_MOVE = 1.0   # rear_left movement power multiplier
+MOTOR_RR_MOVE = 1.0   # rear_right movement power multiplier
+
+# Turning (J/L and sequence turns) multipliers - default set to 2.0 (double power when turning)
+MOTOR_FL_TURN = 2.0   # front_left turning power multiplier
+MOTOR_FR_TURN = 2.0   # front_right turning power multiplier
+MOTOR_RL_TURN = 2.0   # rear_left turning power multiplier
+MOTOR_RR_TURN = 2.0   # rear_right turning power multiplier
+
+# Debounce / hold time to smooth key-hold behavior (seconds)
+KEY_HOLD_TIME = 0.14
+
+# Sequence timing parameters
+SEQUENCE_FORWARD_TIME = 2.0   # seconds to move forward
+SEQUENCE_TURN_TIME = 1.0      # approximate time for 90-degree turn (tuning needed)
+SEQUENCE_SPEED = 100          # speed for sequence moves (0-100)
+SEQUENCE_TURN_SPEED = 80      # speed for sequence turns (0-100)
+
+
+def get_key(timeout=0.05):
+    """Read a single keypress from stdin with timeout (non-blocking).
+    Returns the character as a string or None if timeout.
+    """
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        rlist, _, _ = select.select([fd], [], [], timeout)
+        if rlist:
+            ch = sys.stdin.read(1)
+            # handle arrow keys / escape sequences if needed
+            if ch == "\x1b":
+                # read remaining bytes if available
+                rlist, _, _ = select.select([fd], [], [], 0.01)
+                if rlist:
+                    ch += sys.stdin.read(2)
+            return ch
+        return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def clamp(v, lo=-100, hi=100):
+    return max(lo, min(hi, int(v)))
+
+
+def apply_motor_tuning(fl, fr, rl, rr, mode='move'):
+    """Apply motor power multipliers for tuning.
+    
+    Args:
+        fl, fr, rl, rr: raw motor commands (-100 to 100)
+        mode: 'move' or 'turn' selects which set of multipliers to apply
+    
+    Returns:
+        Tuple of tuned motor commands
+    """
+    if mode == 'turn':
+        fl_tuned = clamp(fl * MOTOR_FL_TURN)
+        fr_tuned = clamp(fr * MOTOR_FR_TURN)
+        rl_tuned = clamp(rl * MOTOR_RL_TURN)
+        rr_tuned = clamp(rr * MOTOR_RR_TURN)
+    else:
+        fl_tuned = clamp(fl * MOTOR_FL_MOVE)
+        fr_tuned = clamp(fr * MOTOR_FR_MOVE)
+        rl_tuned = clamp(rl * MOTOR_RL_MOVE)
+        rr_tuned = clamp(rr * MOTOR_RR_MOVE)
+    return fl_tuned, fr_tuned, rl_tuned, rr_tuned
+
+
+def execute_square_sequence(robot, speed, turn_speed, debug=False):
+    """Execute a square pattern: forward 2s, turn 90°, repeat 3x.
+    
+    Args:
+        robot: SparkyBotMini robot instance
+        speed: forward speed (0-100)
+        turn_speed: turning speed (0-100)
+        debug: if True, print debug info
+    """
+    print("\n=== Starting Square Sequence ===")
+    print(f"Forward speed: {speed}, Turn speed: {turn_speed}")
+    
+    try:
+        # Repeat 3 times (moves forward, turns 90°)
+        for i in range(3):
+            print(f"\nIteration {i+1}/3:")
+            
+            # Move forward for SEQUENCE_FORWARD_TIME seconds
+            print(f"  Moving forward for {SEQUENCE_FORWARD_TIME} sec...")
+            fl, fr, rl, rr = speed, speed, speed, speed
+            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move')
+            robot.set_motor(fl, fr, rl, rr)
+            time.sleep(SEQUENCE_FORWARD_TIME)
+            
+            # Stop (active braking)
+            print("  Stopping (active braking)...")
+            robot.set_motor(0, 0, 0, 0)
+            time.sleep(0.2)
+            
+            # Turn 90 degrees clockwise (left side forward, right side backward)
+            print(f"  Turning 90° for {SEQUENCE_TURN_TIME} sec...")
+            fl, fr, rl, rr = turn_speed, -turn_speed, turn_speed, -turn_speed
+            # apply turn multipliers (doubles turning power by default)
+            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='turn')
+            robot.set_motor(fl, fr, rl, rr)
+            time.sleep(SEQUENCE_TURN_TIME)
+            
+            # Stop (active braking)
+            print("  Stopping (active braking)...")
+            robot.set_motor(0, 0, 0, 0)
+            time.sleep(0.2)
+        
+        # Final forward move (completes the square loop)
+        print(f"\nFinal forward move for {SEQUENCE_FORWARD_TIME} sec...")
+        fl, fr, rl, rr = speed, speed, speed, speed
+        fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move')
+        robot.set_motor(fl, fr, rl, rr)
+        time.sleep(SEQUENCE_FORWARD_TIME)
+        
+        # Final stop
+        print("Stopping (active braking)...")
+        robot.set_motor(0, 0, 0, 0)
+        
+        print("=== Square Sequence Complete ===\n")
+        
+    except Exception as e:
+        print(f"Error during sequence: {e}")
+        robot.set_motor(0, 0, 0, 0)
+
+
+def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
+    """Interactive teleoperation loop for omni wheels with motor tuning.
+
+    - speed: base translational speed (0..100)
+    - port: serial port for the SparkyBotMini
+    - debug: enable debug output
+    """
+    robot = SparkyBotMini(port=port, debug=debug)
+
+    if not robot.connect():
+        print("Failed to connect to robot")
+        return
+
+    print("Connected to SparkyBotMini on {}".format(port))
+    print("\n=== CONTROLS ===")
+    print("  W/A/S/D = move (forward/strafe-left/backward/strafe-right)")
+    print("  J/L = rotate (counter-clockwise/clockwise)")
+    print("  X = execute square sequence (2s forward, 90° turn, repeat)")
+    print("  Space = stop (active braking)")
+    print("  Q = quit")
+    print("\n=== MOTOR TUNING ===")
+    print(f"  MOVE - FL: {MOTOR_FL_MOVE}, FR: {MOTOR_FR_MOVE}")
+    print(f"       RL: {MOTOR_RL_MOVE}, RR: {MOTOR_RR_MOVE}")
+    print(f"  TURN - FL: {MOTOR_FL_TURN}, FR: {MOTOR_FR_TURN}")
+    print(f"       RL: {MOTOR_RL_TURN}, RR: {MOTOR_RR_TURN}")
+    print("  (Edit the constants at the top of this script to adjust)")
+    print("\nUsing wheel order: front_left, front_right, rear_left, rear_right")
+
+    try:
+        running = True
+
+        # Stop at start
+        robot.set_motor(0, 0, 0, 0)
+
+        last_cmd_time = 0.0
+        last_motor_values = (0, 0, 0, 0)
+
+        while running:
+            key = get_key(0.1)
+            now = time.time()
+
+            # If no key pressed, apply active braking only if hold time passed
+            if not key:
+                if now - last_cmd_time < KEY_HOLD_TIME:
+                    # keep last motor command active (don't re-send)
+                    continue
+                else:
+                    # hold time expired -> active braking
+                    last_motor_values = (0, 0, 0, 0)
+                    robot.set_motor(0, 0, 0, 0)
+                    continue
+
+            k = key.lower()
+
+            # default motors (stopped) - will be overridden if key matched
+            fl = fr = rl = rr = 0
+            is_movement_command = False
+            mode = 'move'
+
+            if k == 'w':
+                # forward
+                fl = fr = rl = rr = speed
+                is_movement_command = True
+                mode = 'move'
+            elif k == 's':
+                # backward
+                fl = fr = rl = rr = -speed
+                is_movement_command = True
+                mode = 'move'
+            elif k == 'a':
+                # strafe left (omni-wheel style)
+                # All LEFT wheels move BACKWARD, all RIGHT wheels move FORWARD
+                fl = -speed
+                fr = speed
+                rl = -speed
+                rr = speed
+                is_movement_command = True
+                mode = 'move'
+            elif k == 'd':
+                # strafe right (omni-wheel style)
+                # All LEFT wheels move FORWARD, all RIGHT wheels move BACKWARD
+                fl = speed
+                fr = -speed
+                rl = speed
+                rr = -speed
+                is_movement_command = True
+                mode = 'move'
+            elif k == 'j':
+                # rotate left (counter-clockwise)
+                # LEFT side (fl, rl) moves backward, RIGHT side (fr, rr) moves forward
+                fl = -speed
+                rl = -speed
+                fr = speed
+                rr = speed
+                is_movement_command = True
+                mode = 'turn'
+            elif k == 'l':
+                # rotate right (clockwise)
+                # LEFT side (fl, rl) moves forward, RIGHT side (fr, rr) moves backward
+                fl = speed
+                rl = speed
+                fr = -speed
+                rr = -speed
+                is_movement_command = True
+                mode = 'turn'
+            elif k == 'x':
+                # execute square sequence
+                execute_square_sequence(robot, SEQUENCE_SPEED, SEQUENCE_TURN_SPEED, debug)
+                # reset last command time so we don't immediately brake after sequence
+                last_cmd_time = time.time()
+                continue
+            elif k == ' ':
+                # space: explicit stop (active braking)
+                fl = fr = rl = rr = 0
+                is_movement_command = True
+                mode = 'move'
+            elif k == 'q':
+                print("Quitting...")
+                running = False
+                break
+            else:
+                # unrecognized key: ignore (motors remain at last state due to hold)
+                continue
+
+            # Apply motor tuning for the selected mode and send
+            fl_t, fr_t, rl_t, rr_t = apply_motor_tuning(fl, fr, rl, rr, mode=mode)
+
+            if debug:
+                print(f"set_motor({fl_t}, {fr_t}, {rl_t}, {rr_t}) mode={mode}")
+
+            robot.set_motor(fl_t, fr_t, rl_t, rr_t)
+
+            # update last command time and values (used for hold smoothing)
+            last_cmd_time = time.time()
+            last_motor_values = (fl_t, fr_t, rl_t, rr_t)
+
+    finally:
+        # ensure motors are stopped and we disconnect
+        try:
+            robot.set_motor(0, 0, 0, 0)
+        except Exception:
+            pass
+        robot.disconnect()
+        print("Disconnected")
+
+
+if __name__ == '__main__':
+    # allow optional args: port, speed, debug
+    port = '/dev/ttyUSB0'
+    speed = 80
+    debug = False
+
+    if len(sys.argv) > 1:
+        port = sys.argv[1]
+    if len(sys.argv) > 2:
+        try:
+            speed = int(sys.argv[2])
+        except ValueError:
+            pass
+    if len(sys.argv) > 3:
+        debug = sys.argv[3].lower() in ('1', 'true', 'yes')
+
+    teleop_omni(port=port, speed=clamp(speed), debug=debug)
