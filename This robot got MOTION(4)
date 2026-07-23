@@ -11,6 +11,8 @@ Controls:
   L - rotate right (clockwise)
   X - execute square sequence (forward 2s, turn 90°, repeat 3x)
   Space - stop (active braking)
+  + - increase speed (decreases torque)
+  - - decrease speed (increases torque)
   Q - quit
 
 MOTOR TUNING:
@@ -24,6 +26,11 @@ MOTOR TUNING:
   - MOTOR_*_TURN: multiplier for rotation (J/L or sequence turns)
 
   By default TURN multipliers are set to 2.0 to double turning power as requested.
+
+SPEED & TORQUE:
+  Use + and - keys to adjust speed. Lower speeds automatically get higher torque
+  multipliers for better load handling, while higher speeds get lower torque.
+  This maintains consistent power output across speed ranges.
 
 ACTIVE BRAKING:
   When no key is pressed for a short debounce period, motors are set to 0 (active braking).
@@ -65,6 +72,13 @@ MOTOR_FR_TURN = 2.0   # front_right turning power multiplier
 MOTOR_RL_TURN = 2.0   # rear_left turning power multiplier
 MOTOR_RR_TURN = 2.0   # rear_right turning power multiplier
 
+# Speed & Torque Control
+MIN_SPEED = 20        # minimum speed (0-100)
+MAX_SPEED = 100       # maximum speed (0-100)
+SPEED_INCREMENT = 5   # increment for +/- keys
+BASE_TORQUE = 2.0     # base torque multiplier at max speed
+MIN_TORQUE = 0.5      # minimum torque multiplier (at high speeds)
+
 # Debounce / hold time to smooth key-hold behavior (seconds)
 KEY_HOLD_TIME = 0.14
 
@@ -102,26 +116,46 @@ def clamp(v, lo=-100, hi=100):
     return max(lo, min(hi, int(v)))
 
 
-def apply_motor_tuning(fl, fr, rl, rr, mode='move'):
-    """Apply motor power multipliers for tuning.
+def calculate_torque_multiplier(speed):
+    """Calculate torque multiplier based on current speed.
+    Lower speeds get higher torque (better load handling).
+    Higher speeds get lower torque (higher RPM).
+    
+    Args:
+        speed: current speed (0-100)
+    
+    Returns:
+        Torque multiplier (0.5 to 2.0+)
+    """
+    # Inverse relationship: torque = base * (max_speed / current_speed)
+    # Clamp to reasonable range
+    if speed == 0:
+        return BASE_TORQUE
+    torque = BASE_TORQUE * (MAX_SPEED / speed)
+    return max(MIN_TORQUE, min(torque, BASE_TORQUE * 2))
+
+
+def apply_motor_tuning(fl, fr, rl, rr, mode='move', torque_multiplier=1.0):
+    """Apply motor power multipliers for tuning and torque compensation.
     
     Args:
         fl, fr, rl, rr: raw motor commands (-100 to 100)
         mode: 'move' or 'turn' selects which set of multipliers to apply
+        torque_multiplier: additional multiplier for torque compensation
     
     Returns:
         Tuple of tuned motor commands
     """
     if mode == 'turn':
-        fl_tuned = clamp(fl * MOTOR_FL_TURN)
-        fr_tuned = clamp(fr * MOTOR_FR_TURN)
-        rl_tuned = clamp(rl * MOTOR_RL_TURN)
-        rr_tuned = clamp(rr * MOTOR_RR_TURN)
+        fl_tuned = clamp(fl * MOTOR_FL_TURN * torque_multiplier)
+        fr_tuned = clamp(fr * MOTOR_FR_TURN * torque_multiplier)
+        rl_tuned = clamp(rl * MOTOR_RL_TURN * torque_multiplier)
+        rr_tuned = clamp(rr * MOTOR_RR_TURN * torque_multiplier)
     else:
-        fl_tuned = clamp(fl * MOTOR_FL_MOVE)
-        fr_tuned = clamp(fr * MOTOR_FR_MOVE)
-        rl_tuned = clamp(rl * MOTOR_RL_MOVE)
-        rr_tuned = clamp(rr * MOTOR_RR_MOVE)
+        fl_tuned = clamp(fl * MOTOR_FL_MOVE * torque_multiplier)
+        fr_tuned = clamp(fr * MOTOR_FR_MOVE * torque_multiplier)
+        rl_tuned = clamp(rl * MOTOR_RL_MOVE * torque_multiplier)
+        rr_tuned = clamp(rr * MOTOR_RR_MOVE * torque_multiplier)
     return fl_tuned, fr_tuned, rl_tuned, rr_tuned
 
 
@@ -137,6 +171,9 @@ def execute_square_sequence(robot, speed, turn_speed, debug=False):
     print("\n=== Starting Square Sequence ===")
     print(f"Forward speed: {speed}, Turn speed: {turn_speed}")
     
+    # Calculate torque for this sequence
+    torque = calculate_torque_multiplier(speed)
+    
     try:
         # Repeat 3 times (moves forward, turns 90°)
         for i in range(3):
@@ -145,7 +182,7 @@ def execute_square_sequence(robot, speed, turn_speed, debug=False):
             # Move forward for SEQUENCE_FORWARD_TIME seconds
             print(f"  Moving forward for {SEQUENCE_FORWARD_TIME} sec...")
             fl, fr, rl, rr = speed, speed, speed, speed
-            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move')
+            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move', torque_multiplier=torque)
             robot.set_motor(fl, fr, rl, rr)
             time.sleep(SEQUENCE_FORWARD_TIME)
             
@@ -154,11 +191,11 @@ def execute_square_sequence(robot, speed, turn_speed, debug=False):
             robot.set_motor(0, 0, 0, 0)
             time.sleep(0.2)
             
-            # Turn 90 degrees clockwise (left wheels forward, right wheels backward)
+            # Turn 90 degrees clockwise (left side forward, right side backward)
             print(f"  Turning 90° for {SEQUENCE_TURN_TIME} sec...")
             fl, fr, rl, rr = turn_speed, -turn_speed, turn_speed, -turn_speed
             # apply turn multipliers (doubles turning power by default)
-            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='turn')
+            fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='turn', torque_multiplier=torque)
             robot.set_motor(fl, fr, rl, rr)
             time.sleep(SEQUENCE_TURN_TIME)
             
@@ -170,7 +207,7 @@ def execute_square_sequence(robot, speed, turn_speed, debug=False):
         # Final forward move (completes the square loop)
         print(f"\nFinal forward move for {SEQUENCE_FORWARD_TIME} sec...")
         fl, fr, rl, rr = speed, speed, speed, speed
-        fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move')
+        fl, fr, rl, rr = apply_motor_tuning(fl, fr, rl, rr, mode='move', torque_multiplier=torque)
         robot.set_motor(fl, fr, rl, rr)
         time.sleep(SEQUENCE_FORWARD_TIME)
         
@@ -204,6 +241,8 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
     print("  J/L = rotate (counter-clockwise/clockwise)")
     print("  X = execute square sequence (2s forward, 90° turn, repeat)")
     print("  Space = stop (active braking)")
+    print("  + = increase speed (decreases torque)")
+    print("  - = decrease speed (increases torque)")
     print("  Q = quit")
     print("\n=== MOTOR TUNING ===")
     print(f"  MOVE - FL: {MOTOR_FL_MOVE}, FR: {MOTOR_FR_MOVE}")
@@ -215,6 +254,7 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
 
     try:
         running = True
+        current_speed = speed
 
         # Stop at start
         robot.set_motor(0, 0, 0, 0)
@@ -239,6 +279,20 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
 
             k = key.lower()
 
+            # Check for speed adjustment keys first
+            if k == '+' or k == '=':
+                # increase speed (shifts towards higher RPM, lower torque)
+                current_speed = min(MAX_SPEED, current_speed + SPEED_INCREMENT)
+                torque = calculate_torque_multiplier(current_speed)
+                print(f"Speed increased to {current_speed} | Torque multiplier: {torque:.2f}x")
+                continue
+            elif k == '-' or k == '_':
+                # decrease speed (shifts towards lower RPM, higher torque)
+                current_speed = max(MIN_SPEED, current_speed - SPEED_INCREMENT)
+                torque = calculate_torque_multiplier(current_speed)
+                print(f"Speed decreased to {current_speed} | Torque multiplier: {torque:.2f}x")
+                continue
+
             # default motors (stopped) - will be overridden if key matched
             fl = fr = rl = rr = 0
             is_movement_command = False
@@ -246,46 +300,48 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
 
             if k == 'w':
                 # forward
-                fl = fr = rl = rr = speed
+                fl = fr = rl = rr = current_speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 's':
                 # backward
-                fl = fr = rl = rr = -speed
+                fl = fr = rl = rr = -current_speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 'a':
                 # strafe left (omni-wheel style)
                 # All LEFT wheels move BACKWARD, all RIGHT wheels move FORWARD
-                fl = -speed
-                fr = speed
-                rl = -speed
-                rr = speed
+                fl = -current_speed
+                fr = current_speed
+                rl = -current_speed
+                rr = current_speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 'd':
                 # strafe right (omni-wheel style)
                 # All LEFT wheels move FORWARD, all RIGHT wheels move BACKWARD
-                fl = speed
-                fr = -speed
-                rl = speed
-                rr = -speed
+                fl = current_speed
+                fr = -current_speed
+                rl = current_speed
+                rr = -current_speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 'j':
                 # rotate left (counter-clockwise)
-                fl = -speed
-                rl = -speed
-                fr = speed
-                rr = speed
+                # LEFT side (fl, rl) moves backward, RIGHT side (fr, rr) moves forward
+                fl = -current_speed
+                rl = -current_speed
+                fr = current_speed
+                rr = current_speed
                 is_movement_command = True
                 mode = 'turn'
             elif k == 'l':
                 # rotate right (clockwise)
-                fl = speed
-                rl = speed
-                fr = -speed
-                rr = -speed
+                # LEFT side (fl, rl) moves forward, RIGHT side (fr, rr) moves backward
+                fl = current_speed
+                rl = current_speed
+                fr = -current_speed
+                rr = -current_speed
                 is_movement_command = True
                 mode = 'turn'
             elif k == 'x':
@@ -307,11 +363,14 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
                 # unrecognized key: ignore (motors remain at last state due to hold)
                 continue
 
+            # Calculate torque multiplier based on current speed
+            torque = calculate_torque_multiplier(current_speed)
+
             # Apply motor tuning for the selected mode and send
-            fl_t, fr_t, rl_t, rr_t = apply_motor_tuning(fl, fr, rl, rr, mode=mode)
+            fl_t, fr_t, rl_t, rr_t = apply_motor_tuning(fl, fr, rl, rr, mode=mode, torque_multiplier=torque)
 
             if debug:
-                print(f"set_motor({fl_t}, {fr_t}, {rl_t}, {rr_t}) mode={mode}")
+                print(f"set_motor({fl_t}, {fr_t}, {rl_t}, {rr_t}) mode={mode} speed={current_speed} torque={torque:.2f}x")
 
             robot.set_motor(fl_t, fr_t, rl_t, rr_t)
 
