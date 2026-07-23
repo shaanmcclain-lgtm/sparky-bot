@@ -42,11 +42,11 @@ MAX_SPEED = 100
 DEFAULT_SPEED = 60
 SPEED_INCREMENT = 5
 
-# Motor indices (assuming: m1=front_left, m2=front_right, m3=rear_left, m4=rear_right)
+# Motor indices (actual layout: m1=front_left, m2=back_left, m3=front_right, m4=back_right)
 M1_FL = 0  # front_left
-M2_FR = 1  # front_right
-M3_RL = 2  # rear_left
-M4_RR = 3  # rear_right
+M2_BL = 1  # back_left
+M3_FR = 2  # front_right
+M4_BR = 3  # back_right
 
 # Serial port configuration
 SERIAL_PORT = "/dev/ttyUSB0"
@@ -95,9 +95,9 @@ class OmniWheelDrive:
     Omni-wheel drive controller for 4-wheel omni configuration.
     
     Wheel layout (top view):
-      FL (1)        FR (2)
+      FL (M1)       FR (M3)
       
-      RL (3)        RR (4)
+      BL (M2)       BR (M4)
     
     For omni-drive (WASD):
       - All wheels move together for translation
@@ -152,7 +152,7 @@ class OmniWheelDrive:
     def strafe_left(self):
         """Strafe left (left wheels backward, right wheels forward)"""
         s = self.current_speed
-        motors = (-s, s, -s, s)
+        motors = (-s, -s, s, s)
         self.robot.set_motor(*motors)
         self.last_motors = motors
         if self.debug:
@@ -161,7 +161,7 @@ class OmniWheelDrive:
     def strafe_right(self):
         """Strafe right (left wheels forward, right wheels backward)"""
         s = self.current_speed
-        motors = (s, -s, s, -s)
+        motors = (s, s, -s, -s)
         self.robot.set_motor(*motors)
         self.last_motors = motors
         if self.debug:
@@ -171,7 +171,7 @@ class OmniWheelDrive:
         """Rotate counter-clockwise (tank-drive style)
         Left side backward, right side forward"""
         s = self.current_speed
-        motors = (-s, s, -s, s)
+        motors = (-s, -s, s, s)
         self.robot.set_motor(*motors)
         self.last_motors = motors
         if self.debug:
@@ -181,7 +181,7 @@ class OmniWheelDrive:
         """Rotate clockwise (tank-drive style)
         Left side forward, right side backward"""
         s = self.current_speed
-        motors = (s, -s, s, -s)
+        motors = (s, s, -s, -s)
         self.robot.set_motor(*motors)
         self.last_motors = motors
         if self.debug:
