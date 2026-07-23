@@ -1,55 +1,167 @@
-import pygame
+#!/usr/bin/env python3
+"""
+Omni-wheel teleop for SparkyBotMini using keyboard controls.
+
+Controls:
+  W - forward
+  S - backward
+  A - strafe left
+  D - strafe right
+  J - rotate left (counter-clockwise)
+  L - rotate right (clockwise)
+  Space - stop
+  Q - quit
+
+This keeps using the SparkyBotMini API's set_motor(m1, m2, m3, m4) call.
+Wheel order is assumed to be: front_left, front_right, rear_left, rear_right.
+Motor values use a range of -100..100 (negative == reverse). If your
+SparkyBotMini implementation uses a different convention, adjust the
+mappings accordingly.
+"""
+
 import sys
+import tty
+import termios
+import select
+import time
+from sparkybotmini import SparkyBotMini
 
-# Initialize Pygame keyboard interface
-pygame.init()
-screen = pygame.display.set_mode((300, 300))
-pygame.display.set_caption("Omni Drive Control")
 
-# --- REPLACE THESE WITH YOUR REPOSITORY'S MOTOR API ---
-def set_motors(fl, fr, rl, rr):
+def get_key(timeout=0.05):
+    """Read a single keypress from stdin with timeout (non-blocking).
+    Returns the character as a string or None if timeout.
     """
-    Passes normalized speeds (-1.0 to 1.0) to your hardware API.
-    Replace the prints below with your custom API calls, e.g.:
-    my_robot.fl_motor.set_speed(fl)
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        rlist, _, _ = select.select([fd], [], [], timeout)
+        if rlist:
+            ch = sys.stdin.read(1)
+            # handle arrow keys / escape sequences if needed
+            if ch == "\x1b":
+                # read remaining bytes if available
+                rlist, _, _ = select.select([fd], [], [], 0.01)
+                if rlist:
+                    ch += sys.stdin.read(2)
+            return ch
+        return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def clamp(v, lo=-100, hi=100):
+    return max(lo, min(hi, int(v)))
+
+
+def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
+    """Interactive teleoperation loop for omni wheels.
+
+    - speed: base translational speed (0..100)
+    - port: serial port for the SparkyBotMini
     """
-    print(f"FL: {fl:.2f} | FR: {fr:.2f} | RL: {rl:.2f} | RR: {rr:.2f}")
+    robot = SparkyBotMini(port=port, debug=debug)
 
-def calculate_omni_powers(vx, vy, omega):
-    """Calculates and normalizes wheel power values."""
-    fl = vy + vx + omega
-    fr = vy - vx - omega
-    rl = vy - vx + omega
-    rr = vy + vx + omega
+    if not robot.connect():
+        print("Failed to connect to robot")
+        return
 
-    # Normalize values if any exceed 1.0 to maintain directional accuracy
-    max_val = max(abs(fl), abs(fr), abs(rl), abs(rr), 1.0)
-    
-    return fl / max_val, fr / max_val, rl / max_val, rr / max_val
+    print("Connected to SparkyBotMini on {}".format(port))
+    print("Controls: W/A/S/D = move, J/L = rotate, Space = stop, Q = quit")
+    print("Using wheel order: front_left, front_right, rear_left, rear_right")
 
-# Control Loop
-speed = 1.0  # Max power scale
-clock = pygame.time.Clock()
+    try:
+        running = True
 
-print("Controls: W/S (Forward/Back), A/D (Strafe), Q/E (Rotate)")
+        # Stop at start
+        robot.set_motor(0, 0, 0, 0)
 
-while True:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
+        while running:
+            key = get_key(0.1)
+            if not key:
+                # no keypress; continue
+                continue
 
-    keys = pygame.key.get_pressed()
+            k = key.lower()
 
-    # Read directional inputs
-    vy = (1.0 if keys[pygame.K_w] else 0.0) - (1.0 if keys[pygame.K_s] else 0.0)
-    vx = (1.0 if keys[pygame.K_d] else 0.0) - (1.0 if keys[pygame.K_a] else 0.0)
-    omega = (1.0 if keys[pygame.K_e] else 0.0) - (1.0 if keys[pygame.K_q] else 0.0)
+            # default motors (stopped)
+            fl = fr = rl = rr = 0
 
-    # Compute individual wheel outputs
-    fl, fr, rl, rr = calculate_omni_powers(vx * speed, vy * speed, omega * speed)
+            if k == 'w':
+                # forward
+                fl = fr = rl = rr = speed
+            elif k == 's':
+                # backward
+                fl = fr = rl = rr = -speed
+            elif k == 'a':
+                # strafe left (omni/mecanum style)
+                # front_left: -speed, front_right: speed, rear_left: speed, rear_right: -speed
+                fl = -speed
+                fr = speed
+                rl = speed
+                rr = -speed
+            elif k == 'd':
+                # strafe right
+                fl = speed
+                fr = -speed
+                rl = -speed
+                rr = speed
+            elif k == 'j':
+                # rotate left (counter-clockwise)
+                # left wheels backward, right wheels forward
+                fl = -speed
+                rl = -speed
+                fr = speed
+                rr = speed
+            elif k == 'l':
+                # rotate right (clockwise)
+                fl = speed
+                rl = speed
+                fr = -speed
+                rr = -speed
+            elif k == ' ':
+                # space: stop
+                fl = fr = rl = rr = 0
+            elif k == 'q':
+                print("Quitting...")
+                running = False
+                break
+            else:
+                # unrecognized key: ignore
+                continue
 
-    # Output to API
-    set_motors(fl, fr, rl, rr)
+            # clamp and send
+            fl, fr, rl, rr = map(clamp, (fl, fr, rl, rr))
 
-    clock.tick(30)  # 30 Hz refresh rate
+            if debug:
+                print(f"set_motor({fl}, {fr}, {rl}, {rr})")
+
+            robot.set_motor(fl, fr, rl, rr)
+
+    finally:
+        # ensure motors are stopped and we disconnect
+        try:
+            robot.set_motor(0, 0, 0, 0)
+        except Exception:
+            pass
+        robot.disconnect()
+        print("Disconnected")
+
+
+if __name__ == '__main__':
+    # allow optional args: port, speed, debug
+    port = '/dev/ttyUSB0'
+    speed = 80
+    debug = False
+
+    if len(sys.argv) > 1:
+        port = sys.argv[1]
+    if len(sys.argv) > 2:
+        try:
+            speed = int(sys.argv[2])
+        except ValueError:
+            pass
+    if len(sys.argv) > 3:
+        debug = sys.argv[3].lower() in ('1', 'true', 'yes')
+
+    teleop_omni(port=port, speed=clamp(speed), debug=debug)
