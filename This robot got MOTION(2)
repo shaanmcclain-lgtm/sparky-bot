@@ -255,19 +255,21 @@ def teleop_omni(port="/dev/ttyUSB0", speed=80, debug=False):
                 is_movement_command = True
                 mode = 'move'
             elif k == 'a':
-                # strafe left (omni/mecanum style)
+                # strafe left (omni-wheel style)
+                # All LEFT wheels move BACKWARD, all RIGHT wheels move FORWARD
                 fl = -speed
                 fr = speed
-                rl = speed
-                rr = -speed
+                rl = -speed
+                rr = speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 'd':
-                # strafe right
+                # strafe right (omni-wheel style)
+                # All LEFT wheels move FORWARD, all RIGHT wheels move BACKWARD
                 fl = speed
                 fr = -speed
-                rl = -speed
-                rr = speed
+                rl = speed
+                rr = -speed
                 is_movement_command = True
                 mode = 'move'
             elif k == 'j':
