@@ -1,0 +1,55 @@
+import pygame
+import sys
+
+# Initialize Pygame keyboard interface
+pygame.init()
+screen = pygame.display.set_mode((300, 300))
+pygame.display.set_caption("Omni Drive Control")
+
+# --- REPLACE THESE WITH YOUR REPOSITORY'S MOTOR API ---
+def set_motors(fl, fr, rl, rr):
+    """
+    Passes normalized speeds (-1.0 to 1.0) to your hardware API.
+    Replace the prints below with your custom API calls, e.g.:
+    my_robot.fl_motor.set_speed(fl)
+    """
+    print(f"FL: {fl:.2f} | FR: {fr:.2f} | RL: {rl:.2f} | RR: {rr:.2f}")
+
+def calculate_omni_powers(vx, vy, omega):
+    """Calculates and normalizes wheel power values."""
+    fl = vy + vx + omega
+    fr = vy - vx - omega
+    rl = vy - vx + omega
+    rr = vy + vx + omega
+
+    # Normalize values if any exceed 1.0 to maintain directional accuracy
+    max_val = max(abs(fl), abs(fr), abs(rl), abs(rr), 1.0)
+    
+    return fl / max_val, fr / max_val, rl / max_val, rr / max_val
+
+# Control Loop
+speed = 1.0  # Max power scale
+clock = pygame.time.Clock()
+
+print("Controls: W/S (Forward/Back), A/D (Strafe), Q/E (Rotate)")
+
+while True:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+
+    keys = pygame.key.get_pressed()
+
+    # Read directional inputs
+    vy = (1.0 if keys[pygame.K_w] else 0.0) - (1.0 if keys[pygame.K_s] else 0.0)
+    vx = (1.0 if keys[pygame.K_d] else 0.0) - (1.0 if keys[pygame.K_a] else 0.0)
+    omega = (1.0 if keys[pygame.K_e] else 0.0) - (1.0 if keys[pygame.K_q] else 0.0)
+
+    # Compute individual wheel outputs
+    fl, fr, rl, rr = calculate_omni_powers(vx * speed, vy * speed, omega * speed)
+
+    # Output to API
+    set_motors(fl, fr, rl, rr)
+
+    clock.tick(30)  # 30 Hz refresh rate
